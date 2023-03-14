@@ -1,0 +1,64 @@
+# BattleBots WC7 ELO
+
+```elixir
+Mix.install([
+  {:vega_lite, "~> 0.1.6"},
+  {:kino_vega_lite, "~> 0.1.7"},
+  {:floki, "~> 0.26.0"},
+  {:httpoison, "~> 2.0"}
+])
+
+alias VegaLite, as: Vl
+```
+
+## Setup
+
+```elixir
+resultsTable = Kino.Input.text("Google Sheets Results URL") |> Kino.render()
+
+botsTable = Kino.Input.text("Google Sheets Bots URL") |> Kino.render()
+
+Kino.nothing()
+```
+
+```elixir
+defmodule Utilities do
+  def filterAlpha(str) do
+    str
+    |> String.to_charlist()
+    |> Enum.filter(&(&1 in 65..90))
+    |> List.to_string()
+  end
+
+  def parseResultRows(rows) do
+    rows
+    |> Enum.map(fn int ->
+      int
+      |> Floki.find("td")
+      |> Enum.map(fn tds -> Floki.text(tds) |> Utilities.filterAlpha() |> IO.inspect() end)
+      |> dbg()
+    end)
+
+    IO.puts("break")
+  end
+end
+
+bots =
+  Kino.Input.read(botsTable)
+  |> HTTPoison.get!()
+  |> Map.get(:body)
+  |> Floki.parse_document!()
+  |> Floki.find("table tr")
+  |> Enum.drop(2)
+  |> Enum.map(fn row -> |> Floki.find("td") |> Floki.text(row) |> Utilities.filterAlpha() end)
+
+matches =
+  Kino.Input.read(resultsTable)
+  |> HTTPoison.get!()
+  |> Map.get(:body)
+  |> Floki.parse_document!()
+  |> Floki.find("table tr")
+  |> Enum.drop(3)
+  |> Enum.chunk_every(2)
+  |> Enum.map(fn result -> Utilities.parseResultRows(result) end)
+```
