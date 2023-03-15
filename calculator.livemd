@@ -22,37 +22,23 @@ Kino.nothing()
 ```
 
 ```elixir
-defmodule Utilities do
-  def filterAlpha(str) do
-    str
-    |> String.to_charlist()
-    |> Enum.filter(&(&1 in 65..90))
-    |> List.to_string()
-  end
+startingElo = 1500
+winString = "WIN"
+kFactor = 512
 
-  def parseResultRows(rows) do
-    rows
-    |> Enum.map(fn int ->
-      int
-      |> Floki.find("td")
-      |> Enum.map(fn tds -> Floki.text(tds) |> Utilities.filterAlpha() |> IO.inspect() end)
-      |> dbg()
-    end)
-
-    IO.puts("break")
-  end
-end
-
-bots =
+{_botList, botratings} =
   Kino.Input.read(botsTable)
   |> HTTPoison.get!()
   |> Map.get(:body)
   |> Floki.parse_document!()
   |> Floki.find("table tr")
   |> Enum.drop(2)
-  |> Enum.map(fn row -> |> Floki.find("td") |> Floki.text(row) |> Utilities.filterAlpha() end)
+  |> Enum.map(fn row ->
+    row |> Floki.find("td") |> Enum.drop(2) |> Enum.drop(-1) |> Floki.text()
+  end)
+  |> Enum.map_reduce(%{}, fn bot, botMap -> {bot, Map.put(botMap, bot, startingElo)} end)
 
-matches =
+{_, matches} =
   Kino.Input.read(resultsTable)
   |> HTTPoison.get!()
   |> Map.get(:body)
@@ -60,5 +46,79 @@ matches =
   |> Floki.find("table tr")
   |> Enum.drop(3)
   |> Enum.chunk_every(2)
-  |> Enum.map(fn result -> Utilities.parseResultRows(result) end)
+  |> Enum.map_reduce(%{1 => [], 2 => [], 3 => [], 4 => []}, fn tallRow, acc ->
+    [matches | botAndResults] = tallRow
+    [botElement | resultElements] = botAndResults |> Floki.find("td") |> Enum.drop(1)
+    botName = Floki.text(botElement)
+
+    results =
+      resultElements
+      |> Enum.map(fn result -> String.contains?(result |> Floki.text(), winString) end)
+
+    {_, {_, resultsParsed}} =
+      matches
+      |> Floki.find("td")
+      |> Enum.drop(4)
+      |> Floki.find("a")
+      |> Enum.map_reduce({1, acc}, fn opponent, {i, wonMatches} ->
+        return =
+          if Enum.at(results, i - 1, false) do
+            Map.put(wonMatches, i, [
+              %{botName => opponent |> Floki.text()} | Map.get(wonMatches, i)
+            ])
+          else
+            wonMatches
+          end
+
+        {opponent, {i + 1, return}}
+      end)
+
+    {tallRow, resultsParsed}
+  end)
+
+{_, flatMatches} =
+  matches
+  |> Enum.map_reduce([], fn {_, match}, matches ->
+    {match, matches ++ match}
+  end)
+
+{_, elo} =
+  Enum.map_reduce(flatMatches, botratings, fn match, botratings ->
+    [winner | _] = Map.keys(match)
+    loser = Map.fetch!(match, winner)
+    winnerRating = Map.fetch!(botratings, winner)
+    loserRating = Map.fetch!(botratings, loser)
+    expectedWinnerScore = 1 / (1 + :math.pow((loserRating - winnerRating) / 400, 10))
+    expectedLoserScore = 1 / (1 + :math.pow((winnerRating - loserRating) / 400, 10))
+
+    {match,
+     %{
+       botratings
+       | winner => winnerRating + kFactor * (1 - expectedWinnerScore),
+         loser => loserRating + kFactor * (0 - expectedLoserScore)
+     }}
+  end)
+
+chartableELO =
+  Enum.map(elo, fn bot ->
+    botName = elem(bot, 0)
+    %{"Bot Name" => botName, "ELO" => round(elem(bot, 1))}
+  end)
+
+{:ok}
+```
+
+<!-- livebook:{"attrs":{"chart_title":null,"height":null,"layers":[{"chart_type":"bar","color_field":"ELO","color_field_aggregate":null,"color_field_bin":false,"color_field_scale_scheme":null,"color_field_type":"quantitative","data_variable":"chartableELO","x_field":"Bot Name","x_field_aggregate":null,"x_field_bin":false,"x_field_scale_type":null,"x_field_type":"nominal","y_field":"ELO","y_field_aggregate":null,"y_field_bin":false,"y_field_scale_type":null,"y_field_type":"quantitative"}],"vl_alias":"Elixir.Vl","width":null},"chunks":null,"kind":"Elixir.KinoVegaLite.ChartCell","livebook_object":"smart_cell"} -->
+
+```elixir
+Vl.new()
+|> Vl.data_from_values(chartableELO, only: ["Bot Name", "ELO"])
+|> Vl.mark(:bar)
+|> Vl.encode_field(:x, "Bot Name", type: :nominal)
+|> Vl.encode_field(:y, "ELO", type: :quantitative)
+|> Vl.encode_field(:color, "ELO", type: :quantitative)
+```
+
+```elixir
+Kino.DataTable.new(chartableELO)
 ```
